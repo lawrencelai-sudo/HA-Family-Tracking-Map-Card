@@ -1,8 +1,8 @@
 // =========================================================================
-// 🧩 Custom Home Assistant Card: color-map-card
+// Custom Home Assistant Card: color-map-card
 // =========================================================================
 //
-// 📜 CONFIGURATION (YAML ATTRIBUTES):
+// CONFIGURATION (YAML ATTRIBUTES):
 //
 // Global Map Options:
 // map_height: (Optional, integer) Height of the map in pixels (e.g., 500). Default: 400.
@@ -50,9 +50,10 @@ class ColorMapCard extends HTMLElement {
     this.isHistoryVisible = true; 
     this.isAutoFitEnabled = true; 
     this.fitPadding = 50; 
+    this.fitHistory = false; // NEW: State to track if history lines should be included in autofit.
     
     this.fadeDuration = 500; 
-    // 🚩 Staggering constants
+    // 圸 Staggering constants
     this.STAGGER_DISTANCE_PX = 10; 
     this.STAGGER_MAX_ENTITIES = 8; 
     this.defaultIconAnchor = [12, 12];
@@ -84,6 +85,18 @@ class ColorMapCard extends HTMLElement {
         }
         #map-container { flex: 1; width: 100%; height: 100%; z-index: 0; background: #e5e7eb; }
         .custom-marker { border: 2px solid white; border-radius: 50%; box-shadow: 0 0 5px rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; font-weight: bold; color: white; font-size: 10px; }
+        
+        /* * FIX: Ensure the inner marker div (which holds the letter) 
+         * has a line-height and height equal to its parent for vertical centering.
+         */
+        .custom-marker > div { 
+            display: flex; /* Ensure inner content (the letter) is centered */
+            align-items: center; 
+            justify-content: center; 
+            height: 100%; /* Match iconSize [24, 24] */
+            line-height: 24px; /* Fix for vertical centering of text */
+        }
+        
         .leaflet-control-custom-bar { margin-top: 10px; border-radius: 4px; overflow: hidden; box-shadow: 0 1px 5px rgba(0,0,0,0.4); }
         .leaflet-control-custom-bar button {
             background-color: var(--card-background-color, #fff); border: none; cursor: pointer;
@@ -396,6 +409,19 @@ class ColorMapCard extends HTMLElement {
             self.historyButton = historyButton;
             L.DomEvent.on(historyButton, 'click', self.toggleHistory, self);
             
+            // NEW ICON: crop_free (Four corners of a box)
+            const fitHistoryButton = L.DomUtil.create('button', `fit-history-button ${self.fitHistory ? 'active' : ''}`, container);
+            fitHistoryButton.type = 'button';
+            fitHistoryButton.innerHTML = `
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="20px" height="20px">
+                    <path d="M0 0h24v24H0z" fill="none"/>
+                    <path d="M3 5v4h2V5h4V3H5c-1.1 0-2 .9-2 2zm2 14h4v2H5c-1.1 0-2-.9-2-2v-4h2v4zm14 0h-4v2h4c1.1 0 2-.9 2-2v-4h-2v4zm0-14h-4v-2h4c1.1 0 2 .9 2 2v4h-2V5z"/>
+                </svg>
+            `;
+            fitHistoryButton.title = "Toggle AutoFit to include history (ON/OFF)";
+            self.fitHistoryButton = fitHistoryButton;
+            L.DomEvent.on(fitHistoryButton, 'click', self.toggleFitHistory, self);
+            
             L.DomEvent.disableClickPropagation(container);
             return container;
         }
@@ -438,6 +464,15 @@ class ColorMapCard extends HTMLElement {
     }
   }
 
+  // NEW: Method to toggle history auto-fit mode
+  toggleFitHistory() {
+    this.fitHistory = !this.fitHistory;
+    this.fitHistoryButton.classList.toggle('active', this.fitHistory);
+    // Force a map update and auto-fit to apply the new bounds logic
+    this.manualInteraction = false;
+    this.updateMap(true); 
+  }
+  
   recenterMap() {
     this.manualInteraction = false;
     this.updateMap(true); 
@@ -457,6 +492,30 @@ class ColorMapCard extends HTMLElement {
         newLayer.addTo(this.map);
     }
   }
+
+  // Helper function to get the marker text
+  getMarkerText(stateObj, entityId) {
+      const name = stateObj.attributes.friendly_name || entityId;
+      return name.charAt(0).toUpperCase();
+  }
+  
+  // Helper function to format the timestamp
+  formatDateTime(timestamp) {
+      if (!timestamp) return 'Time Unknown';
+      const date = new Date(timestamp);
+
+      // Options for the desired format: "September 4 @ 10:15pm"
+      const monthDayOptions = { month: 'long', day: 'numeric' };
+      const timeOptions = { hour: 'numeric', minute: '2-digit', hour12: true };
+
+      const monthDay = date.toLocaleDateString(navigator.language, monthDayOptions);
+      const time = date.toLocaleTimeString(navigator.language, timeOptions);
+      
+      // Clean up time string (e.g., convert "10:15 PM" to "10:15pm")
+      const cleanedTime = time.toLowerCase().replace(/ /g, '');
+
+      return `${monthDay} @ ${cleanedTime}`;
+  }
   
   async updateMap(forceAutoFit = false) {
     if (!this.map || !this.config.entities || !this._hass) return;
@@ -464,7 +523,7 @@ class ColorMapCard extends HTMLElement {
     this.updateMapTheme(this._hass.themes.darkMode);
     this.map.invalidateSize(); 
 
-    const visibleBounds = [];
+    let visibleBounds = [];
     const currentlyTracked = new Set(Object.keys(this.markers));
 
     for (const entConfig of this.config.entities) {
@@ -523,6 +582,7 @@ class ColorMapCard extends HTMLElement {
       visibleBounds.push([lat, lng]);
 
       const entityName = stateObj.attributes.friendly_name || entityId;
+      const markerText = this.getMarkerText(stateObj, entityId); // Get the marker text
       const newLatlng = [lat, lng];
       
       if (isCurrentlyOnMap) {
@@ -543,15 +603,15 @@ class ColorMapCard extends HTMLElement {
         this.animateMarker(marker, newLatlng);
         marker.setPopupContent(entityName);
         
-        // Check if the color has changed and update the icon if necessary
+        // Check if the color or text has changed and update the icon if necessary
         try {
             const currentIcon = marker.options.icon;
             const currentHtml = currentIcon.options.html;
-            const match = currentHtml.match(/background-color:\s*(.*?);/);
-            const currentColor = match ? match[1].trim() : null;
+            
+            // Generate the new HTML string for comparison
+            const newIconHtml = `<div style="background-color: ${color}; width: 100%; height: 100%; border-radius: 50%;">${markerText}</div>`;
 
-            if (currentColor !== color) {
-                const newIconHtml = `<div style="background-color: ${color}; width: 100%; height: 100%; border-radius: 50%;"></div>`;
+            if (currentHtml !== newIconHtml) {
                 const newIcon = L.divIcon({
                   className: 'custom-marker',
                   html: newIconHtml,
@@ -562,7 +622,7 @@ class ColorMapCard extends HTMLElement {
                 marker.setIcon(newIcon);
             }
         } catch (e) {
-            console.warn("Could not check/update marker icon color.", e);
+            console.warn("Could not check/update marker icon color/text.", e);
         }
         
         if (this.isHistoryVisible && entConfig.hours_to_show > 0) {
@@ -571,7 +631,7 @@ class ColorMapCard extends HTMLElement {
 
       } else {
         // --- Marker is NEW, create it and add it to the map ---
-        const iconHtml = `<div style="background-color: ${color}; width: 100%; height: 100%; border-radius: 50%;"></div>`;
+        const iconHtml = `<div style="background-color: ${color}; width: 100%; height: 100%; border-radius: 50%;">${markerText}</div>`; 
         const icon = L.divIcon({
           className: 'custom-marker',
           html: iconHtml,
@@ -595,6 +655,26 @@ class ColorMapCard extends HTMLElement {
     currentlyTracked.forEach(entityId => {
         this.removeEntityFromMap(entityId);
     });
+    
+    // NEW LOGIC: Add history line coordinates to bounds if fitHistory is enabled
+    if (this.fitHistory && this.isHistoryVisible) {
+        // Iterate over all currently drawn polylines
+        Object.keys(this.polylines).forEach(entityId => {
+            const polyline = this.polylines[entityId];
+            if (polyline) {
+                // getLatLngs() returns an array of LatLng objects (or an array of arrays if MultiPolyline)
+                polyline.getLatLngs().forEach(latlng => {
+                    if (Array.isArray(latlng)) {
+                       // Handle MultiPolyline case (unlikely but safe)
+                       latlng.forEach(ll => visibleBounds.push([ll.lat, ll.lng]));
+                    } else {
+                       // Handle simple Polyline case
+                       visibleBounds.push([latlng.lat, latlng.lng]);
+                    }
+                });
+            }
+        });
+    }
     
     const shouldAutoFit = visibleBounds.length > 0 && this.isAutoFitEnabled && (forceAutoFit || !this.manualInteraction);
                           
@@ -671,7 +751,10 @@ class ColorMapCard extends HTMLElement {
       );
 
       if (history && history[0]) {
-        const latlngs = [];
+        // Store objects with coordinates and timestamp for the dot popup
+        const dotData = [];
+        const entityStateObj = this._hass.states[entityId];
+        const entityName = entityStateObj ? entityStateObj.attributes.friendly_name || entityId : entityId;
 
         history[0]
           .filter(h => h.attributes.latitude && h.attributes.longitude)
@@ -692,9 +775,13 @@ class ColorMapCard extends HTMLElement {
             }
             // --- END HISTORY SNAPPING ---
             
-            latlngs.push([lat, lng]);
+            dotData.push({
+                latlng: [lat, lng],
+                timestamp: h.last_updated || h.last_changed 
+            });
           });
           
+        const latlngs = dotData.map(d => d.latlng);
         const newCoordinatesString = JSON.stringify(latlngs);
 
         if (this.historyCache[entityId] === newCoordinatesString) {
@@ -709,14 +796,25 @@ class ColorMapCard extends HTMLElement {
         }
         await new Promise(resolve => setTimeout(resolve, this.fadeDuration));
 
-        const dots = latlngs.map(latlng => L.circleMarker(latlng, {
-            radius: 4,
-            fillColor: color,
-            color: '#fff',
-            weight: 1,
-            opacity: 0.8, 
-            fillOpacity: 0.8 
-        }));
+        // Create dots and bind popups
+        const dots = dotData.map(data => {
+            const dot = L.circleMarker(data.latlng, {
+                radius: 4,
+                fillColor: color,
+                color: '#fff',
+                weight: 1,
+                opacity: 0.8, 
+                fillOpacity: 0.8 
+            });
+
+            const formattedTime = this.formatDateTime(data.timestamp);
+            const popupContent = `
+                <b>${entityName}</b><br>
+                ${formattedTime}
+            `;
+            dot.bindPopup(popupContent);
+            return dot;
+        });
 
         this.polylines[entityId] = L.polyline(latlngs, {
           color: color,
