@@ -1,4 +1,4 @@
-# 🗺️ Color Map Card
+# 🗺️ Family Tracking Map Card
 
 A custom Home Assistant Lovelace card designed to display device trackers with customizable colors, dynamic history trails, and zone snapping. It includes visual staggering to ensure multiple entities at the same location (like a zone center) are all visible.
 
